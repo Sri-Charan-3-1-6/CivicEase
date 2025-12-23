@@ -1,0 +1,9 @@
+{
+  "name": "CivicEase AI Assistant",
+  "description": "A friendly AI-powered government helper for Indian citizens to fill complex forms and report civic issues with ease.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
