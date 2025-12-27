@@ -7,10 +7,19 @@ const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 // Helper to get full language name for stricter prompt adherence
 const getLangName = (code: Language) => LANGUAGES.find(l => l.code === code)?.name || 'English';
 
-// Helper to clean JSON string from Markdown code fences
+// Helper to clean JSON string from Markdown code fences and extract valid JSON object
 const cleanJSON = (text: string) => {
   if (!text) return '{}';
-  return text.replace(/```json\s*|\s*```/g, '').replace(/```/g, '').trim();
+  // Remove markdown code blocks
+  let cleaned = text.replace(/```json\s*|\s*```/g, '').replace(/```/g, '').trim();
+  // Attempt to find the first '{' and last '}' to extract the actual JSON object
+  // This handles cases where the model might add conversational text before/after the JSON
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start !== -1 && end !== -1 && end > start) {
+    cleaned = cleaned.substring(start, end + 1);
+  }
+  return cleaned;
 };
 
 export const analyzeFormImage = async (base64Image: string, language: Language = 'en'): Promise<FormAnalysis> => {

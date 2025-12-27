@@ -102,8 +102,11 @@ const App: React.FC = () => {
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => setUserLocation({ lat: position.coords.latitude, lng: position.coords.longitude }),
-        (error) => console.error("Location access denied", error),
-        { enableHighAccuracy: true }
+        (error) => {
+          // Log warning instead of error to prevent console noise on denial
+          console.warn("Location access denied or unavailable:", error.message);
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
       );
     }
   }, []);
