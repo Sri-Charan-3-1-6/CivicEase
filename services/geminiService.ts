@@ -7,6 +7,12 @@ const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 // Helper to get full language name for stricter prompt adherence
 const getLangName = (code: Language) => LANGUAGES.find(l => l.code === code)?.name || 'English';
 
+// Helper to clean JSON string from Markdown code fences
+const cleanJSON = (text: string) => {
+  if (!text) return '{}';
+  return text.replace(/```json\s*|\s*```/g, '').replace(/```/g, '').trim();
+};
+
 export const analyzeFormImage = async (base64Image: string, language: Language = 'en'): Promise<FormAnalysis> => {
   const ai = getAI();
   const langName = getLangName(language);
@@ -31,7 +37,7 @@ export const analyzeFormImage = async (base64Image: string, language: Language =
       }
     }
   });
-  return JSON.parse(response.text || '{}');
+  return JSON.parse(cleanJSON(response.text || '{}'));
 };
 
 export const analyzeProblemImage = async (base64Image: string, language: Language = 'en'): Promise<ProblemAnalysis> => {
@@ -58,7 +64,7 @@ export const analyzeProblemImage = async (base64Image: string, language: Languag
       }
     }
   });
-  return JSON.parse(response.text || '{}');
+  return JSON.parse(cleanJSON(response.text || '{}'));
 };
 
 export const suggestVaultPreFill = async (assistantText: string, vaultDocs: VaultDoc[], language: Language = 'en'): Promise<{ docType: string; value: string } | null> => {
@@ -87,7 +93,7 @@ export const suggestVaultPreFill = async (assistantText: string, vaultDocs: Vaul
   });
 
   try {
-    const text = response.text || '';
+    const text = cleanJSON(response.text || '');
     if (text === 'null' || text.includes('null')) return null;
     const result = JSON.parse(text);
     return result.value ? result : null;
@@ -150,5 +156,5 @@ export const simulateDigiLockerFetch = async (docType: string): Promise<Record<s
     Use realistic Indian names and addresses. Ensure valid formatting.`,
     config: { responseMimeType: "application/json" }
   });
-  return JSON.parse(response.text || '{}');
+  return JSON.parse(cleanJSON(response.text || '{}'));
 };

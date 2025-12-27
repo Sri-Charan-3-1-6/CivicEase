@@ -75,7 +75,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [voiceVolume, setVoiceVolume] = useState(0);
   const [formState, setFormState] = useState<FormState | null>(null);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // We use a specific ref for the container to control internal scrolling ONLY
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const liveSessionRef = useRef<any>(null);
   const audioContextsRef = useRef<{ out: AudioContext | null, in: AudioContext | null }>({ out: null, in: null });
@@ -109,7 +110,15 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, []);
 
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // FIX: Using scrollTo on the container instead of scrollIntoView on an element.
+    // This prevents the whole page/body from scrolling up when a new message appears.
+    if (chatContainerRef.current) {
+        const { scrollHeight, clientHeight } = chatContainerRef.current;
+        chatContainerRef.current.scrollTo({
+            top: scrollHeight - clientHeight,
+            behavior: 'smooth'
+        });
+    }
     if (onMessagesChange) onMessagesChange(messages);
   }, [messages]);
 
@@ -287,7 +296,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           2. IF THE USER SPEAKS ENGLISH, MENTALLY TRANSLATE IT AND REPLY IN ${currentLangNative}.
           
           INTELLIGENT DATA HANDLING (FORM FILLING EXCEPTION):
-          - If the user provides specific DATA VALUES (like Name, ID numbers, addresses, vehicle numbers) that are officially written in English/Latin script:
+          - If the user provides specific VALUES for a form (like Name: 'Amit', ID: 'ABC1234'), keep those values in the script they were provided (usually English) if that matches the form's requirement.
             - DO NOT TRANSLATE THE VALUE itself into the native script unless explicitly asked.
             - KEEP THE DATA VALUE IN ENGLISH.
           - Example: User says "My name is Rahul Sharma".
@@ -492,7 +501,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   return (
-    <div className="flex flex-col h-[85dvh] md:h-[75vh] bg-white dark:bg-slate-900 md:rounded-[3rem] shadow-2xl overflow-hidden relative border border-gray-100 dark:border-white/5 mx-[-1rem] md:mx-0">
+    <div className="flex flex-col h-full bg-white dark:bg-slate-900 rounded-[2rem] md:rounded-[3rem] shadow-2xl overflow-hidden relative border-2 border-gray-200 dark:border-slate-700 mx-[-0.5rem] md:mx-0">
       {loading && !isLiveActive && <div className="absolute inset-0 z-[100] bg-white/60 dark:bg-slate-900/60 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in"><div className="flex gap-1.5 mb-6">{[0, 0.1, 0.2].map(d => <div key={d} className="w-2 h-8 bg-secondary rounded-full animate-wave" style={{ animationDelay: `${d}s` }}></div>)}</div><p className="text-[10px] font-black uppercase tracking-[0.3em] text-primary dark:text-white">{t('processing')}</p></div>}
       
       {isCameraOpen && <div className="absolute inset-0 z-[110] bg-black flex flex-col"><video ref={videoRef} autoPlay playsInline className="flex-1 object-cover"></video><div className="p-10 flex justify-center gap-10 bg-black pb-[calc(2rem+env(safe-area-inset-bottom))]"><button onClick={() => setIsCameraOpen(false)} className="w-14 h-14 rounded-full bg-white/10 text-white"><i className="fas fa-times"></i></button><button onClick={takePhoto} className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center transition-all active:scale-90"><div className="w-14 h-14 rounded-full bg-white"></div></button></div></div>}
@@ -500,19 +509,48 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       <div className="bg-primary dark:bg-slate-950 p-4 md:p-8 flex justify-between items-center z-10 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center text-primary"><i className="fas fa-robot"></i></div>
-          <div><p className="text-[7px] font-black text-white/30 uppercase tracking-widest leading-none mb-1">Live Intelligence • {currentLangNative}</p><h4 className="font-black text-xs md:text-xl text-white tracking-tight uppercase truncate">{t(initialMode.toLowerCase().replace('_', '') + 'Assistant')}</h4></div>
+          <div><p className="text-[9px] font-black text-white/30 uppercase tracking-widest leading-none mb-1">Live Intelligence • {currentLangNative}</p><h4 className="font-black text-sm md:text-xl text-white tracking-tight uppercase truncate">{t(initialMode.toLowerCase().replace('_', '') + 'Assistant')}</h4></div>
         </div>
-        <button onClick={onReset} className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-[8px] font-black uppercase text-white tracking-widest hover:bg-white/10">{t('endSession')}</button>
+        <button onClick={onReset} className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-black uppercase text-white tracking-widest hover:bg-white/10">{t('endSession')}</button>
       </div>
 
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        <div className="flex-1 flex flex-col overflow-hidden relative">
-          <div className="flex-1 overflow-y-auto p-4 md:p-10 space-y-6 bg-[#fcfcfd] dark:bg-slate-900/50">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+        {/* Split Screen - Live Visualizer Panel (Active only) */}
+        {isLiveActive && (
+          <div className="flex-1 md:flex-[0_0_40%] bg-slate-900 relative flex flex-col items-center justify-center p-6 border-b-2 md:border-b-0 md:border-r-2 border-gray-200 dark:border-slate-700 order-1 md:order-2 animate-in slide-in-from-top md:slide-in-from-right duration-500 z-20 shadow-2xl overflow-hidden">
+              {/* Enhanced Ambient Background for Live Mode */}
+              <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 z-0"></div>
+              <div className="absolute top-0 right-0 w-64 h-64 bg-secondary/5 rounded-full blur-3xl z-0 pointer-events-none"></div>
+
+              <div className="relative z-10 flex flex-col items-center w-full">
+                  <div className="relative w-32 h-32 flex items-center justify-center mb-6">
+                      <div className="absolute inset-0 bg-secondary/20 rounded-full animate-ping opacity-75" style={{ animationDuration: '2s' }}></div>
+                      <div className="absolute inset-4 bg-secondary/40 rounded-full animate-pulse"></div>
+                      <div className="relative z-10 w-24 h-24 bg-secondary rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(245,158,11,0.5)] transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/50})` }}>
+                          <i className="fas fa-microphone text-3xl text-primary"></i>
+                      </div>
+                  </div>
+                  <h3 className="text-white font-black text-xl mb-2 tracking-tight">Listening...</h3>
+                  <p className="text-white/40 text-xs font-bold uppercase tracking-widest mb-8">{currentLangNative}</p>
+                  
+                  <div className="flex gap-4">
+                      <button onClick={stopLiveSession} className="px-8 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 rounded-xl font-black uppercase text-xs tracking-widest transition-all">
+                        Stop Session
+                      </button>
+                  </div>
+              </div>
+          </div>
+        )}
+
+        {/* Chat Transcript Area - Resizes when Live is active */}
+        <div className={`flex flex-col overflow-hidden relative transition-all duration-500 order-2 md:order-1 ${isLiveActive ? 'flex-1 bg-white dark:bg-slate-950' : 'flex-1'}`}>
+          {/* Main scrollable container with ref */}
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-10 space-y-6 bg-[#fcfcfd] dark:bg-slate-900/50 scroll-smooth">
             {messages.map(m => (
               <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-2`}>
                 <div className={`max-w-[90%] md:max-w-[75%] p-4 md:p-6 shadow-sm ${m.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
                   {m.image && <img src={m.image} className="rounded-2xl mb-4 w-full object-cover max-h-64 shadow-xl" alt="Shared" />}
-                  <p className="text-xs md:text-base font-bold leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                  <p className="text-sm md:text-base font-bold leading-relaxed whitespace-pre-wrap">{m.content}</p>
                   
                   {/* Grounding Links Rendering */}
                   {m.groundingLinks && m.groundingLinks.length > 0 && (
@@ -529,20 +567,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 </div>
               </div>
             ))}
-            <div ref={scrollRef} />
           </div>
-
-          {isLiveActive && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-secondary text-primary px-6 py-2.5 rounded-full shadow-2xl flex items-center gap-3 z-50 animate-in slide-in-from-top-4">
-              <div className="flex gap-0.5 items-end h-3">{[0, 1, 2, 3, 4].map(i => <div key={i} className="w-0.5 bg-primary rounded-full transition-all duration-75" style={{ height: `${Math.max(2, voiceVolume / 10)}px` }}></div>)}</div>
-              <span className="text-[9px] font-black uppercase tracking-widest">{t('voiceLive')} ({currentLangNative})</span>
-              <button onClick={stopLiveSession} className="w-5 h-5 bg-primary/10 rounded-full flex items-center justify-center"><i className="fas fa-times text-[8px]"></i></button>
-            </div>
-          )}
         </div>
 
         {formState && (
-          <div className={`shrink-0 transition-all duration-500 bg-white dark:bg-slate-900 border-l border-gray-100 dark:border-white/5 flex flex-col ${formState.isCollapsed ? 'md:w-20 w-12' : 'md:w-[350px] w-full h-[40dvh] md:h-auto'}`}>
+          <div className={`shrink-0 transition-all duration-500 bg-white dark:bg-slate-900 border-l-2 border-gray-200 dark:border-slate-700 flex flex-col order-3 ${formState.isCollapsed ? 'md:w-20 w-12' : 'md:w-[350px] w-full h-[30dvh] md:h-auto'}`}>
             <div className="p-4 md:p-6 border-b border-gray-50 dark:border-white/5 flex items-center justify-between shrink-0">
                 <div className={`transition-opacity duration-300 ${formState.isCollapsed ? 'opacity-0 overflow-hidden w-0' : 'opacity-100'}`}><h5 className="text-[10px] font-black uppercase tracking-widest text-secondary mb-1">Live Progress</h5><h4 className="text-sm font-black dark:text-white truncate max-w-[200px]">{formState.title}</h4></div>
                 <button onClick={() => setFormState(prev => prev ? { ...prev, isCollapsed: !prev.isCollapsed } : prev)} className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-slate-800 flex items-center justify-center text-gray-400"><i className={`fas ${formState.isCollapsed ? 'fa-expand' : 'fa-compress'} text-xs`}></i></button>
@@ -552,14 +581,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         )}
       </div>
 
-      <div className="p-4 md:p-8 bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-white/5 pb-[calc(1.5rem+env(safe-area-inset-bottom))]">
-        <div className="flex gap-2 md:gap-4 max-w-5xl mx-auto">
-          <button onClick={startCamera} className="w-12 h-12 md:w-16 md:h-16 bg-slate-50 dark:bg-slate-800 rounded-xl md:rounded-2xl flex items-center justify-center text-primary dark:text-secondary active:scale-95 transition-all"><i className="fas fa-camera text-base md:text-xl"></i></button>
-          <button onClick={toggleLiveVoice} className={`w-12 h-12 md:w-16 md:h-16 rounded-xl md:rounded-2xl flex items-center justify-center transition-all ${isLiveActive ? 'bg-secondary text-primary' : 'bg-slate-50 dark:bg-slate-800 text-gray-500'}`}><i className={`fas ${isLiveActive ? 'fa-stop-circle' : 'fa-microphone'} text-base md:text-xl`}></i></button>
-          <div className="flex-1 relative"><input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="w-full h-12 md:h-16 bg-slate-50 dark:bg-slate-950 rounded-xl md:rounded-2xl px-6 dark:text-white font-bold text-xs md:text-base outline-none border border-transparent focus:border-secondary transition-all" placeholder={t('speakOrType')}/></div>
-          <button onClick={() => handleSend()} className="w-12 h-12 md:w-16 md:h-16 bg-primary text-white flex items-center justify-center rounded-xl md:rounded-2xl shrink-0 shadow-lg active:scale-90 transition-all"><i className="fas fa-paper-plane"></i></button>
+      {/* Input Bar - Hidden during Live Mode to fix layout shifts and focus on voice */}
+      {!isLiveActive && (
+        <div className="p-4 md:p-8 bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-white/5 pb-[calc(1.5rem+env(safe-area-inset-bottom))]">
+          <div className="flex gap-2 md:gap-4 max-w-5xl mx-auto">
+            <button onClick={startCamera} className="w-12 h-12 md:w-16 md:h-16 bg-slate-50 dark:bg-slate-800 rounded-xl md:rounded-2xl flex items-center justify-center text-primary dark:text-secondary active:scale-95 transition-all"><i className="fas fa-camera text-base md:text-xl"></i></button>
+            <button onClick={toggleLiveVoice} className={`w-12 h-12 md:w-16 md:h-16 rounded-xl md:rounded-2xl flex items-center justify-center transition-all ${isLiveActive ? 'bg-secondary text-primary' : 'bg-slate-50 dark:bg-slate-800 text-gray-500'}`}><i className={`fas ${isLiveActive ? 'fa-stop-circle' : 'fa-microphone'} text-base md:text-xl`}></i></button>
+            <div className="flex-1 relative"><input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="w-full h-12 md:h-16 bg-slate-50 dark:bg-slate-950 rounded-xl md:rounded-2xl px-6 dark:text-white font-bold text-sm md:text-base outline-none border border-transparent focus:border-secondary transition-all" placeholder={t('speakOrType')}/></div>
+            <button onClick={() => handleSend()} className="w-12 h-12 md:w-16 md:h-16 bg-primary text-white flex items-center justify-center rounded-xl md:rounded-2xl shrink-0 shadow-lg active:scale-90 transition-all"><i className="fas fa-paper-plane"></i></button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
