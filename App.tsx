@@ -16,6 +16,7 @@ const App: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [realTimeUpdates, setRealTimeUpdates] = useState<string[]>([]);
+  const [lastUpdatedTime, setLastUpdatedTime] = useState<string>('');
   
   const [vaultDocs, setVaultDocs] = useState<VaultDoc[]>([
     { id: '1', name: 'Aadhaar Card', type: 'AADHAAR', status: 'NOT_FETCHED' },
@@ -81,6 +82,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const fetchLiveNews = async () => {
+      setLastUpdatedTime(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }));
       try {
         const apiKey = getApiKey();
         if (!apiKey) throw new Error("No API Key");
@@ -88,7 +90,7 @@ const App: React.FC = () => {
         const ai = new GoogleGenAI({ apiKey });
         const response = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
-          contents: `Provide 5 extremely recent, short Indian government news headlines (under 8 words). Translate to ${LANGUAGES.find(l => l.code === language)?.name}. JSON Array of strings only.`,
+          contents: `Provide 5 extremely recent (past 24h) Indian government news headlines/alerts. Short (<8 words). Translate to ${LANGUAGES.find(l => l.code === language)?.name}. JSON Array of strings only.`,
           config: {
             tools: [{ googleSearch: {} }],
             responseMimeType: "application/json",
@@ -203,18 +205,23 @@ const App: React.FC = () => {
     <div className={`min-h-[100dvh] flex flex-col font-sans transition-colors duration-500 ${darkMode ? 'text-white' : 'text-slate-900'}`}>
       
       {/* Dynamic News Ticker with Fixed Badge */}
-      <div className="bg-secondary/10 dark:bg-secondary/5 border-b border-secondary/20 backdrop-blur-md py-2 relative z-50 flex items-center">
+      <div className="bg-secondary/10 dark:bg-secondary/5 border-b border-secondary/20 backdrop-blur-md py-3 relative z-50 flex items-center">
         {/* Fixed Badge Area */}
-        <div className="shrink-0 px-4 z-20 relative">
+        <div className="shrink-0 pl-4 pr-3 z-20 relative flex flex-col items-center justify-center">
           <span className="font-black text-[10px] uppercase tracking-[0.2em] px-3 py-1 bg-secondary text-primary rounded-md shadow-sm whitespace-nowrap flex items-center gap-2">
-            <i className="fas fa-bolt animate-pulse"></i>
+            <i className="fas fa-satellite-dish animate-pulse"></i>
             {t('tickerUpdates')}
           </span>
+          {lastUpdatedTime && (
+            <span className="text-[8px] font-bold text-slate-500 dark:text-slate-400 mt-1 uppercase tracking-wide">
+               {lastUpdatedTime}
+            </span>
+          )}
         </div>
         
-        {/* Scrolling Content Area */}
-        <div className="flex-1 overflow-hidden relative mask-image-linear-gradient">
-            <div className="animate-marquee whitespace-nowrap flex gap-12 items-center">
+        {/* Scrolling Content Area with Mask */}
+        <div className="flex-1 overflow-hidden relative mask-fade h-6 flex items-center">
+            <div className="animate-marquee whitespace-nowrap flex gap-12 items-center absolute left-0">
               {/* Duplicated list for seamless infinite scroll */}
               {[...realTimeUpdates, ...realTimeUpdates, ...realTimeUpdates].map((item, i) => (
                 <span key={i} className="text-xs font-bold uppercase tracking-wider flex items-center gap-2 text-slate-700 dark:text-slate-200">
