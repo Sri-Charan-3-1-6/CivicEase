@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { FormAnalysis, ProblemAnalysis, Language, VaultDoc, LANGUAGES } from "../types";
 
@@ -131,12 +130,16 @@ export const suggestVaultPreFill = async (assistantText: string, vaultDocs: Vaul
 export const findNearbyOffices = async (query: string, lat: number, lng: number, language: Language = 'en'): Promise<{ text: string; grounding?: any[] }> => {
   const ai = getAI();
   const langName = getLangName(language);
+  // Improved prompt to ask for multiple options and ensure direction links are prioritized
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
-    contents: `Locate the ABSOLUTE NEAREST and active government office for "${query}" near these Indian GPS coordinates: Latitude ${lat}, Longitude ${lng}. 
-    Consider all Indian administrative levels: Rural/Tehsil, District, Municipal.
-    Provide the exact name, a very short address, and distance. 
-    CRITICAL: Respond strictly in ${langName}. If the place name is in English, transliterate or translate it to ${langName}.`,
+    contents: `Find the top 3 nearest and active government offices relevant to "${query}" near Indian GPS coordinates: Lat ${lat}, Lng ${lng}.
+    Consider Tehsildar, District Offices, Municipal Corporations, or Seva Kendras.
+    For each option, provide:
+    1. The Exact Name
+    2. A brief address
+    3. Approximate distance
+    CRITICAL: Respond strictly in ${langName}. Use the Google Maps tool to verify existence and generate grounding links for directions.`,
     config: {
       tools: [{ googleMaps: {} }],
       toolConfig: { retrievalConfig: { latLng: { latitude: lat, longitude: lng } } }
@@ -144,7 +147,7 @@ export const findNearbyOffices = async (query: string, lat: number, lng: number,
   });
   
   const grounding = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
-    title: chunk.maps?.title || 'Gov Location', 
+    title: chunk.maps?.title || 'View on Maps', 
     uri: chunk.maps?.uri
   })).filter((c: any) => c.uri) || [];
   
@@ -154,16 +157,30 @@ export const findNearbyOffices = async (query: string, lat: number, lng: number,
 export const findGovSchemes = async (profile: string, language: Language = 'en'): Promise<{ text: string; grounding?: any[] }> => {
   const ai = getAI();
   const langName = getLangName(language);
+  // Upgraded to Gemini 3.0 Pro for comprehensive search and reasoning
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `Identify top 3 Indian govt schemes for: ${profile}. List eligibility. 
-    CRITICAL: Provide all information strictly in ${langName}. If scheme names are in English, provide them in ${langName} as well.`,
+    model: "gemini-3-pro-preview",
+    contents: `Act as an expert Indian Government Scheme Advisor.
+    Perform an extensive search to find ALL relevant and active government schemes for the profile/query: "${profile}".
+    
+    Do not limit the number of schemes. Include major Central Government schemes and relevant State Government schemes if a location is implied.
+    
+    For each scheme, strictly provide:
+    1. Scheme Name
+    2. Key Benefits (Cash assistance, subsidy, insurance coverage, etc.)
+    3. Eligibility Criteria (Income limit, Age, Caste, etc.)
+    4. Application Mode (Online portal link name or Offline office)
+    
+    Format the output clearly with bullet points.
+    CRITICAL: Provide ALL information strictly in ${langName}.`,
     config: { tools: [{ googleSearch: {} }] }
   });
+  
   const grounding = response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => ({
     title: chunk.web?.title || 'Gov Source', 
     uri: chunk.web?.uri
   })).filter((c: any) => !!c.uri) || [];
+  
   return { text: response.text || '', grounding };
 };
 

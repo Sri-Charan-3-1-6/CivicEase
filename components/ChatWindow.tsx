@@ -314,7 +314,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           systemInstruction: `You are CivicEase AI, a dedicated government assistant for India.
           Target Language: ${currentLangNative}.
           Speak ONLY in ${currentLangNative} unless acting as a translator.
-          Be concise.`
+          Be concise.
+          If asked for directions or offices, mention that you can see the results on the screen.`
         }
       });
       liveSessionRef.current = await sessionPromise;
@@ -425,7 +426,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 const fieldValue = match[2].trim();
                 
                 // Only process this specific tag instance if we haven't seen it yet
-                // Note: using strict match check might skip duplicates if user intends them, but for form filling unique updates are expected per turn
                 const matchUniqueId = `${fieldName}:${fieldValue}`;
                 
                 if (!processedTagsRef.current.has(matchUniqueId)) {
@@ -440,7 +440,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                             ...prev,
                             fields: prev.fields.map(f => {
                                 const isMatch = f.name.toLowerCase().includes(fieldName.toLowerCase()) || fieldName.toLowerCase().includes(f.name.toLowerCase());
-                                // Only update if value is different to avoid re-renders
                                 if (isMatch && f.value !== fieldValue) {
                                     return { ...f, value: fieldValue };
                                 }
@@ -567,52 +566,51 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       </div>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        {/* Live Visualization Panel */}
+        
+        {/* Split Screen: Live Visualization Panel */}
         {isLiveActive && (
-          <div className="absolute inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-300">
+          <div className="w-full h-[40%] md:w-[40%] md:h-full bg-slate-900 flex flex-col items-center justify-center relative border-b md:border-b-0 md:border-r border-white/10 order-1 md:order-1 transition-all duration-300">
               <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 via-slate-900 to-black z-0"></div>
               
-              {/* Dynamic Visualizer */}
-              <div className="relative z-10 w-full max-w-md aspect-square flex items-center justify-center">
-                   {/* Multiple rings */}
-                   <div className="absolute w-64 h-64 border-2 border-secondary/20 rounded-full animate-[spin_10s_linear_infinite]"></div>
-                   <div className="absolute w-56 h-56 border-2 border-secondary/10 rounded-full animate-[spin_8s_linear_infinite_reverse]"></div>
+              {/* Dynamic Visualizer - Scaled down slightly for split screen */}
+              <div className="relative z-10 w-full max-w-[200px] aspect-square flex items-center justify-center scale-75 md:scale-90">
+                   <div className="absolute w-56 h-56 border-2 border-secondary/20 rounded-full animate-[spin_10s_linear_infinite]"></div>
+                   <div className="absolute w-44 h-44 border-2 border-secondary/10 rounded-full animate-[spin_8s_linear_infinite_reverse]"></div>
                    
-                   {/* Voice Reactive Blobs */}
                    <div className="absolute inset-0 flex items-center justify-center">
-                       <div className="w-40 h-40 bg-secondary/30 rounded-full blur-3xl transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/30})` }}></div>
+                       <div className="w-32 h-32 bg-secondary/30 rounded-full blur-3xl transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/30})` }}></div>
                    </div>
                    
-                   <div className="relative z-10 w-32 h-32 bg-gradient-to-tr from-secondary to-orange-500 rounded-full flex items-center justify-center shadow-[0_0_60px_rgba(245,158,11,0.4)] transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/100})` }}>
-                       <i className="fas fa-microphone text-4xl text-white"></i>
+                   <div className="relative z-10 w-24 h-24 bg-gradient-to-tr from-secondary to-orange-500 rounded-full flex items-center justify-center shadow-[0_0_60px_rgba(245,158,11,0.4)] transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/100})` }}>
+                       <i className="fas fa-microphone text-3xl text-white"></i>
                    </div>
               </div>
 
-              <div className="relative z-10 text-center mt-8">
-                  <h3 className="text-white font-black text-2xl mb-2 tracking-tight">Listening...</h3>
-                  <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-10">{currentLangNative}</p>
+              <div className="relative z-10 text-center mt-4">
+                  <h3 className="text-white font-black text-xl mb-1 tracking-tight">Listening...</h3>
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-6">{currentLangNative}</p>
                   
-                  <button onClick={stopLiveSession} className="w-16 h-16 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center border border-red-500/50 mx-auto">
-                    <i className="fas fa-stop text-xl"></i>
+                  <button onClick={stopLiveSession} className="px-6 py-2 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all flex items-center gap-2 border border-red-500/50 mx-auto text-xs font-bold uppercase tracking-wider">
+                    <i className="fas fa-stop"></i> Stop
                   </button>
               </div>
           </div>
         )}
 
-        {/* Chat Area */}
-        <div className="flex-1 overflow-hidden relative flex flex-col bg-slate-50/50 dark:bg-slate-900/50">
+        {/* Chat Area - Occupies remaining space */}
+        <div className={`flex-1 overflow-hidden relative flex flex-col bg-slate-50/50 dark:bg-slate-900/50 order-2 md:order-2`}>
           <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8 scroll-smooth pb-24">
             {messages.map((m, idx) => (
               <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-4 group`}>
                  
-                 <div className="flex items-end gap-3 max-w-[90%] md:max-w-[75%]">
+                 <div className="flex items-end gap-3 max-w-[95%] md:max-w-[85%]">
                     {m.role === 'assistant' && (
                         <div className="w-8 h-8 rounded-full bg-white dark:bg-slate-800 border border-gray-100 dark:border-white/10 flex items-center justify-center shrink-0 shadow-sm text-secondary text-xs">
                             <i className="fas fa-robot"></i>
                         </div>
                     )}
                     
-                    <div className={`p-5 md:p-6 shadow-sm relative ${m.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
+                    <div className={`p-4 md:p-6 shadow-sm relative ${m.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
                         {m.image && (
                             <div className="mb-4 overflow-hidden rounded-xl border border-white/10 shadow-lg">
                                 <img src={m.image} className="w-full object-cover max-h-64" alt="Shared" />
@@ -620,18 +618,25 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                         )}
                         <p className="text-sm md:text-base font-medium leading-relaxed whitespace-pre-wrap">{m.content}</p>
                         
-                        {/* Links */}
+                        {/* Links / Directions */}
                         {m.groundingLinks && m.groundingLinks.length > 0 && (
-                            <div className="mt-4 flex flex-wrap gap-2 pt-3 border-t border-black/5 dark:border-white/5">
-                                {m.groundingLinks.slice(0, 3).map((link, idx) => (
-                                <a key={idx} href={link.uri} target="_blank" rel="noopener noreferrer" 
-                                    className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg text-[10px] hover:bg-secondary/10 transition-colors border border-black/5 dark:border-white/5 group/link">
-                                    <div className="w-5 h-5 rounded-full bg-white dark:bg-slate-700 flex items-center justify-center shadow-sm">
-                                        <i className={`fas ${link.uri.includes('google.com/maps') ? 'fa-map-marker-alt text-red-500' : 'fa-globe text-blue-500'}`}></i>
-                                    </div>
-                                    <span className="truncate max-w-[150px] font-bold text-slate-700 dark:text-slate-200 group-hover/link:text-secondary">{link.title}</span>
-                                </a>
-                                ))}
+                            <div className="mt-4 flex flex-col gap-2 pt-3 border-t border-black/5 dark:border-white/5">
+                                {m.groundingLinks.slice(0, 3).map((link, idx) => {
+                                  const isMap = link.uri.includes('google.com/maps');
+                                  return (
+                                    <a key={idx} href={link.uri} target="_blank" rel="noopener noreferrer" 
+                                        className={`flex items-center gap-3 p-3 rounded-xl text-xs transition-all border group/link ${isMap ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/30' : 'bg-slate-50 dark:bg-slate-800/50 border-gray-100 dark:border-white/5 hover:bg-slate-100'}`}>
+                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center shadow-sm shrink-0 ${isMap ? 'bg-blue-500 text-white' : 'bg-white dark:bg-slate-700 text-slate-500'}`}>
+                                            <i className={`fas ${isMap ? 'fa-directions' : 'fa-globe'}`}></i>
+                                        </div>
+                                        <div className="flex flex-col min-w-0">
+                                            <span className={`font-bold truncate ${isMap ? 'text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'}`}>{link.title}</span>
+                                            {isMap && <span className="text-[10px] opacity-70 font-semibold uppercase tracking-wide">Get Directions</span>}
+                                        </div>
+                                        <i className="fas fa-external-link-alt ml-auto opacity-50 text-[10px]"></i>
+                                    </a>
+                                  );
+                                })}
                             </div>
                         )}
                     </div>
@@ -644,7 +649,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
             <div ref={messagesEndRef} />
           </div>
           
-          {/* Floating Input Area */}
+          {/* Floating Input Area (Hidden when Live is active for cleaner look, user speaks instead) */}
           {!isLiveActive && (
              <div className="absolute bottom-6 left-4 right-4 md:left-8 md:right-8 z-20">
                  <div className="glass-card p-2 rounded-[1.5rem] flex items-center gap-2 shadow-xl shadow-slate-200/50 dark:shadow-black/50">
@@ -682,7 +687,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
         {/* Sidebar for Forms */}
         {formState && (
-          <div className={`shrink-0 transition-all duration-500 bg-white dark:bg-slate-900 border-l border-gray-100 dark:border-white/5 flex flex-col shadow-2xl z-30 ${formState.isCollapsed ? 'md:w-16 w-14' : 'md:w-80 w-full h-[35dvh] md:h-auto absolute bottom-0 left-0 right-0 md:relative'}`}>
+          <div className={`shrink-0 transition-all duration-500 bg-white dark:bg-slate-900 border-l border-gray-100 dark:border-white/5 flex flex-col shadow-2xl z-30 ${formState.isCollapsed ? 'md:w-16 w-14' : 'md:w-80 w-full h-[35dvh] md:h-auto absolute bottom-0 left-0 right-0 md:relative order-3'}`}>
              {/* ... Sidebar content ... */}
              <div className="p-4 border-b border-gray-100 dark:border-white/5 flex items-center justify-between shrink-0 bg-slate-50/50 dark:bg-slate-800/50">
                 <div className={`transition-opacity duration-300 ${formState.isCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'}`}>
