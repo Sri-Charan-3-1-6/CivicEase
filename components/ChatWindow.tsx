@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, Mode, Language, VaultDoc, LANGUAGES, FormAnalysis } from '../types';
 import { 
@@ -56,6 +55,8 @@ async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: 
   return buffer;
 }
 
+const getApiKey = () => (window as any).API_KEY || process.env.API_KEY;
+
 const ChatWindow: React.FC<ChatWindowProps> = ({ 
   initialMode, 
   language, 
@@ -74,9 +75,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [isLiveActive, setIsLiveActive] = useState(false);
   const [voiceVolume, setVoiceVolume] = useState(0);
   const [formState, setFormState] = useState<FormState | null>(null);
+  const [errorToast, setErrorToast] = useState<string | null>(null);
 
-  // We use a specific ref for the container to control internal scrolling ONLY
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const liveSessionRef = useRef<any>(null);
   const audioContextsRef = useRef<{ out: AudioContext | null, in: AudioContext | null }>({ out: null, in: null });
@@ -85,8 +87,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const frameIntervalRef = useRef<any>(null);
+  const processedTagsRef = useRef<Set<string>>(new Set());
 
-  // Track current turn message IDs for Live API streaming
   const liveTurnIds = useRef<{ user: string | null, assistant: string | null }>({ user: null, assistant: null });
 
   const currentLangName = LANGUAGES.find(l => l.code === language)?.name || 'English';
@@ -102,6 +104,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     return text;
   };
 
+  const showError = (msg: string) => {
+    setErrorToast(msg);
+  };
+
+  useEffect(() => {
+    if (errorToast) {
+        const timer = setTimeout(() => setErrorToast(null), 4000);
+        return () => clearTimeout(timer);
+    }
+  }, [errorToast]);
+
   useEffect(() => {
     if (messages.length === 0) {
       const modeName = t(initialMode.toLowerCase().replace('_', '') + 'Assistant') || t('assistant');
@@ -110,15 +123,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   }, []);
 
   useEffect(() => {
-    // FIX: Using scrollTo on the container instead of scrollIntoView on an element.
-    // This prevents the whole page/body from scrolling up when a new message appears.
-    if (chatContainerRef.current) {
-        const { scrollHeight, clientHeight } = chatContainerRef.current;
-        chatContainerRef.current.scrollTo({
-            top: scrollHeight - clientHeight,
-            behavior: 'smooth'
-        });
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     if (onMessagesChange) onMessagesChange(messages);
   }, [messages]);
 
@@ -126,16 +131,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     return () => { stopLiveSession(); };
   }, []);
 
-  // Hot-reloading AI context when language changes
   useEffect(() => {
     if (isLiveActive) {
       stopLiveSession();
-      // Small delay to allow cleanup
+      // Allow cleanup to finish before restart
       setTimeout(() => toggleLiveVoice(), 500);
     }
   }, [language]);
 
-  // Live Vision: Stream frames if Live is active AND Camera is open
   useEffect(() => {
     if (isLiveActive && isCameraOpen && videoRef.current && liveSessionRef.current) {
         const canvas = document.createElement('canvas');
@@ -143,14 +146,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         
         frameIntervalRef.current = setInterval(async () => {
             if (videoRef.current && ctx) {
-                canvas.width = videoRef.current.videoWidth / 3; // Lower res for latency
+                // Reduce resolution for bandwidth optimization (approx 426x240)
+                canvas.width = videoRef.current.videoWidth / 3;
                 canvas.height = videoRef.current.videoHeight / 3;
                 ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-                // 0.5 quality jpeg
-                const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+                // Lower quality to 0.4 for faster transmission
+                const base64 = canvas.toDataURL('image/jpeg', 0.4).split(',')[1];
                 
-                // IMPORTANT: Use session promise to prevent stale closure if we were using it, 
-                // but here we use the ref which is stable.
+                // Only send if session is connected
                 liveSessionRef.current.sendRealtimeInput({
                     media: { mimeType: "image/jpeg", data: base64 }
                 });
@@ -170,8 +173,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     
     setLoading(true);
     try {
-      const outCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      const inCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const outCtx = new AudioContextClass({ sampleRate: 24000 });
+      const inCtx = new AudioContextClass({ sampleRate: 16000 });
+      
+      // Resume contexts immediately to handle autoplay policies
       await outCtx.resume();
       await inCtx.resume();
       audioContextsRef.current = { out: outCtx, in: inCtx };
@@ -181,7 +187,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       });
       streamRef.current = stream;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const apiKey = getApiKey();
+      if (!apiKey) throw new Error("API Key Missing");
+      const ai = new GoogleGenAI({ apiKey });
+
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
@@ -199,8 +208,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               if (!analyserRef.current) return;
               const data = new Uint8Array(analyserRef.current.frequencyBinCount);
               analyserRef.current.getByteFrequencyData(data);
-              setVoiceVolume(data.reduce((a, b) => a + b) / data.length);
-              requestAnimationFrame(viz);
+              const vol = data.reduce((a, b) => a + b) / data.length;
+              setVoiceVolume(vol);
+              if (audioContextsRef.current.in?.state === 'running') {
+                  requestAnimationFrame(viz);
+              }
             };
             viz();
 
@@ -208,8 +220,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               const data = e.inputBuffer.getChannelData(0);
               const int16 = new Int16Array(data.length);
               for (let i = 0; i < data.length; i++) int16[i] = data[i] * 32768;
-              sessionPromise.then(s => s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } }))
-                .catch(() => {});
+              
+              // Ensure we don't send if session closed
+              sessionPromise.then(s => {
+                  try {
+                    s.sendRealtimeInput({ media: { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' } });
+                  } catch(e) { /* ignore send errors on close */ }
+              }).catch(() => {});
             };
             source.connect(processor);
             processor.connect(inCtx.destination);
@@ -223,7 +240,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               return;
             }
 
-            // Handle Input Transcription (User Speech)
             if (msg.serverContent?.inputTranscription) {
               const text = msg.serverContent.inputTranscription.text;
               if (text) {
@@ -240,7 +256,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               }
             }
 
-            // Handle Output Transcription (Model Speech)
             if (msg.serverContent?.outputTranscription) {
               const text = msg.serverContent.outputTranscription.text;
               if (text) {
@@ -263,74 +278,71 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
             const base64 = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64 && outCtx) {
-              const buffer = await decodeAudioData(decode(base64), outCtx, 24000, 1);
-              const source = outCtx.createBufferSource();
-              source.buffer = buffer;
-              source.connect(outCtx.destination);
-              // Optimistic scheduling to reduce latency
-              const now = outCtx.currentTime;
-              // If next start time is in the past, reset it to now (plus small buffer)
-              if (nextStartTimeRef.current < now) {
-                  nextStartTimeRef.current = now + 0.05;
-              }
-              source.start(nextStartTimeRef.current);
-              nextStartTimeRef.current += buffer.duration;
-              audioSourcesRef.current.add(source);
+              try {
+                const buffer = await decodeAudioData(decode(base64), outCtx, 24000, 1);
+                const source = outCtx.createBufferSource();
+                source.buffer = buffer;
+                source.connect(outCtx.destination);
+                const now = outCtx.currentTime;
+                // Schedule next chunk
+                if (nextStartTimeRef.current < now) {
+                    nextStartTimeRef.current = now + 0.05; // Small buffer
+                }
+                source.start(nextStartTimeRef.current);
+                nextStartTimeRef.current += buffer.duration;
+                
+                source.onended = () => {
+                    audioSourcesRef.current.delete(source);
+                };
+                audioSourcesRef.current.add(source);
+              } catch (e) { console.error("Audio Decode Error", e); }
             }
           },
-          onclose: () => setIsLiveActive(false),
-          onerror: (e) => { console.error("Live Error", e); stopLiveSession(); }
+          onclose: () => {
+              setIsLiveActive(false);
+          },
+          onerror: (e) => { 
+              console.error("Live Error", e); 
+              stopLiveSession(); 
+          }
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          // Enable transcriptions to visualize the conversation
-          // IMPORTANT: Do NOT pass a model name here. Just enable them.
           inputAudioTranscription: {},
           outputAudioTranscription: {},
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           systemInstruction: `You are CivicEase AI, a dedicated government assistant for India.
-          
-          CRITICAL LANGUAGE RULE: 
-          The user has selected: ${currentLangName} (${currentLangNative}).
-          1. YOU MUST SPEAK, THINK, AND RESPOND IN ${currentLangNative}.
-          2. IF THE USER SPEAKS ENGLISH, MENTALLY TRANSLATE IT AND REPLY IN ${currentLangNative}.
-          
-          INTELLIGENT DATA HANDLING (FORM FILLING EXCEPTION):
-          - If the user provides specific VALUES for a form (like Name: 'Amit', ID: 'ABC1234'), keep those values in the script they were provided (usually English) if that matches the form's requirement.
-            - DO NOT TRANSLATE THE VALUE itself into the native script unless explicitly asked.
-            - KEEP THE DATA VALUE IN ENGLISH.
-          - Example: User says "My name is Rahul Sharma".
-            - Hindi Response: "ठीक है, मैंने आपका नाम 'Rahul Sharma' अपडेट कर दिया है।" (Notice 'Rahul Sharma' is kept in English script).
-            - Reason: Official Indian forms often require English data entry.
-          
-          ROLE & BEHAVIOR:
-          - Helper for: ${initialMode}.
-          - Tone: Professional, warm, clear.
-          - Context: User is likely in India, coordinates: ${userLocation?.lat}, ${userLocation?.lng}.
-          - Keep answers concise for voice interaction.`
+          Target Language: ${currentLangNative}.
+          Speak ONLY in ${currentLangNative} unless acting as a translator.
+          Be concise.`
         }
       });
       liveSessionRef.current = await sessionPromise;
     } catch (err) {
       console.error(err);
       setLoading(false);
-      alert(t('micError'));
+      showError(t('micError'));
     }
   };
 
   const stopLiveSession = () => {
-    if (liveSessionRef.current) { try { liveSessionRef.current.close(); } catch(e) {} }
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (liveSessionRef.current) { 
+        try { liveSessionRef.current.close(); } catch(e) {} 
+        liveSessionRef.current = null;
+    }
+    
+    if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+    }
+    
     audioSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
     audioSourcesRef.current.clear();
     
-    // Check state before closing to avoid "Cannot close a closed AudioContext" error
-    if (audioContextsRef.current.in && audioContextsRef.current.in.state !== 'closed') {
-      try { audioContextsRef.current.in.close(); } catch(e) {}
-    }
-    if (audioContextsRef.current.out && audioContextsRef.current.out.state !== 'closed') {
-      try { audioContextsRef.current.out.close(); } catch(e) {}
-    }
+    const { in: inCtx, out: outCtx } = audioContextsRef.current;
+    if (inCtx) { try { inCtx.close(); } catch(e) {} }
+    if (outCtx) { try { outCtx.close(); } catch(e) {} }
+    audioContextsRef.current = { in: null, out: null };
 
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     
@@ -351,6 +363,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     setMessages(prev => [...prev, { id: userMsgId, role: 'user', content: val }]);
     setInput('');
     setLoading(true);
+    // Reset processed tags for new generation
+    processedTagsRef.current.clear();
 
     try {
       if (initialMode === Mode.OFFICE_LOCATOR && userLocation) {
@@ -360,29 +374,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         const result = await findGovSchemes(val, language);
         setMessages(prev => [...prev, { id: assistantMsgId, role: 'assistant', content: result.text, groundingLinks: result.grounding }]);
       } else {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const apiKey = getApiKey();
+        if (!apiKey) throw new Error("API Key Missing");
+        const ai = new GoogleGenAI({ apiKey });
         
         let systemInstr = `You are CivicEase AI. TARGET LANGUAGE: ${currentLangNative}.
-        
-        STRICT OUTPUT RULES:
-        1. PROVIDE ALL CONVERSATIONAL RESPONSES EXCLUSIVELY IN ${currentLangNative}.
-        2. Act as a real-time translator if the user uses multiple languages.
-        
-        INTELLIGENT FORM FILLING EXCEPTION:
-        - If the user is providing specific VALUES for a form (like Name: 'Amit', ID: 'ABC1234'), keep those values in the script they were provided (usually English) if that matches the form's requirement.
-        - DO NOT translate the *content* of the data unless it makes sense (e.g. translate 'Village' to 'गाँव' is okay, but 'Aadhaar ID' characters should remain).
-        - Example: If user says "My name is John", reply in ${currentLangNative}: "Sure, I have updated your name to John." (Keep 'John' in English if form is English).
-        
-        Context: ${initialMode}. Be helpful and professional.
-        Use Google Search to provide up-to-date info if needed.`;
+        RULES: 
+        1. Reply in ${currentLangNative}.
+        2. Keep formatting clean.`;
 
         if (initialMode === Mode.FORM_FILLING && formState) {
-            systemInstr += `\n\nFORM EDITING MODE:
-            The user might want to fill fields for the form: "${formState.title}".
-            Current fields: ${formState.fields.map(f => f.name).join(', ')}.
-            If the user provides a value for a field, output a HIDDEN tag at the end of your response like this:
-            [[UPDATE:FieldName:Value]]
-            Example: "Sure, I've updated your name." [[UPDATE:Full Name:John Doe]]`;
+            systemInstr += `\n\nFORM MODE: User edits "${formState.title}". Current fields: ${formState.fields.map(f => f.name).join(', ')}. If user provides value, append [[UPDATE:FieldName:Value]].`;
         }
 
         const streamResponse = await ai.models.generateContentStream({
@@ -400,11 +402,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
 
         for await (const chunk of streamResponse) {
             const part = chunk as GenerateContentResponse;
-            // Extract text
             const text = part.text || "";
             fullText += text;
 
-            // Extract grounding
             if (part.candidates?.[0]?.groundingMetadata?.groundingChunks) {
                 const chunks = part.candidates[0].groundingMetadata.groundingChunks;
                 const newLinks = chunks.map((c: any) => ({
@@ -414,24 +414,42 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 groundings = [...groundings, ...newLinks];
             }
 
-            // Parse update tags (remove from visible text)
             let visibleText = fullText;
             const updateRegex = /\[\[UPDATE:(.*?):(.*?)\]\]/g;
             let match;
+            
+            // Loop through all matches in the accumulated text
             while ((match = updateRegex.exec(fullText)) !== null) {
+                const fullMatch = match[0];
                 const fieldName = match[1].trim();
                 const fieldValue = match[2].trim();
-                // Update form state
-                setFormState(prev => {
-                    if (!prev) return null;
-                    return {
-                        ...prev,
-                        fields: prev.fields.map(f => f.name.toLowerCase().includes(fieldName.toLowerCase()) || fieldName.toLowerCase().includes(f.name.toLowerCase()) 
-                            ? { ...f, value: fieldValue } 
-                            : f)
-                    };
-                });
-                visibleText = visibleText.replace(match[0], '');
+                
+                // Only process this specific tag instance if we haven't seen it yet
+                // Note: using strict match check might skip duplicates if user intends them, but for form filling unique updates are expected per turn
+                const matchUniqueId = `${fieldName}:${fieldValue}`;
+                
+                if (!processedTagsRef.current.has(matchUniqueId)) {
+                    processedTagsRef.current.add(matchUniqueId);
+                    
+                    setFormState(prev => {
+                        if (!prev) return null;
+                        const exists = prev.fields.some(f => f.name.toLowerCase().includes(fieldName.toLowerCase()) || fieldName.toLowerCase().includes(f.name.toLowerCase()));
+                        if (!exists) return prev;
+
+                        return {
+                            ...prev,
+                            fields: prev.fields.map(f => {
+                                const isMatch = f.name.toLowerCase().includes(fieldName.toLowerCase()) || fieldName.toLowerCase().includes(f.name.toLowerCase());
+                                // Only update if value is different to avoid re-renders
+                                if (isMatch && f.value !== fieldValue) {
+                                    return { ...f, value: fieldValue };
+                                }
+                                return f;
+                            })
+                        };
+                    });
+                }
+                visibleText = visibleText.replace(fullMatch, '');
             }
 
             setMessages(prev => prev.map(m => m.id === assistantMsgId ? { 
@@ -456,7 +474,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       });
       if (videoRef.current) videoRef.current.srcObject = stream;
     } catch (err) {
-      alert(t('cameraError'));
+      showError(t('cameraError'));
       setIsCameraOpen(false);
     }
   };
@@ -469,7 +487,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     canvas.getContext('2d')?.drawImage(videoRef.current, 0, 0);
     const data = canvas.toDataURL('image/jpeg', 0.8);
     
-    // Do NOT stop tracks if Live is active, only if just taking a photo
     if (!isLiveActive && videoRef.current.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
         setIsCameraOpen(false);
@@ -481,6 +498,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       let analysis;
       if (initialMode === Mode.FORM_FILLING) {
         analysis = await analyzeFormImage(raw, language);
+        if (!analysis.requiredFields || analysis.requiredFields.length === 0) {
+            showError("Could not identify form.");
+            setLoading(false);
+            return;
+        }
         setMessages(prev => [...prev, { id: 'img', role: 'user', content: 'Form Image.', image: data }]);
         setMessages(prev => [...prev, { id: 'resp', role: 'assistant', content: t('formIdentified', { formType: analysis.formType, field: analysis.requiredFields[0] }) }]);
         setFormState({ title: analysis.formType, isCollapsed: false, fields: analysis.requiredFields.map(f => ({ name: f, value: '', section: 'Details' })) });
@@ -501,97 +523,213 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const progressPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-slate-900 rounded-[2rem] md:rounded-[3rem] shadow-2xl overflow-hidden relative border-2 border-gray-200 dark:border-slate-700 mx-[-0.5rem] md:mx-0">
-      {loading && !isLiveActive && <div className="absolute inset-0 z-[100] bg-white/60 dark:bg-slate-900/60 backdrop-blur-md flex flex-col items-center justify-center animate-in fade-in"><div className="flex gap-1.5 mb-6">{[0, 0.1, 0.2].map(d => <div key={d} className="w-2 h-8 bg-secondary rounded-full animate-wave" style={{ animationDelay: `${d}s` }}></div>)}</div><p className="text-[10px] font-black uppercase tracking-[0.3em] text-primary dark:text-white">{t('processing')}</p></div>}
+    <div className="flex flex-col h-full bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl overflow-hidden relative border border-gray-100 dark:border-white/5 mx-auto max-w-6xl animate-page-enter">
       
-      {isCameraOpen && <div className="absolute inset-0 z-[110] bg-black flex flex-col"><video ref={videoRef} autoPlay playsInline className="flex-1 object-cover"></video><div className="p-10 flex justify-center gap-10 bg-black pb-[calc(2rem+env(safe-area-inset-bottom))]"><button onClick={() => setIsCameraOpen(false)} className="w-14 h-14 rounded-full bg-white/10 text-white"><i className="fas fa-times"></i></button><button onClick={takePhoto} className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center transition-all active:scale-90"><div className="w-14 h-14 rounded-full bg-white"></div></button></div></div>}
-
-      <div className="bg-primary dark:bg-slate-950 p-4 md:p-8 flex justify-between items-center z-10 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center text-primary"><i className="fas fa-robot"></i></div>
-          <div><p className="text-[9px] font-black text-white/30 uppercase tracking-widest leading-none mb-1">Live Intelligence • {currentLangNative}</p><h4 className="font-black text-sm md:text-xl text-white tracking-tight uppercase truncate">{t(initialMode.toLowerCase().replace('_', '') + 'Assistant')}</h4></div>
+      {/* Toast */}
+      {errorToast && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-full shadow-2xl z-[150] flex items-center gap-3 animate-in fade-in slide-in-from-top-4 font-bold text-xs uppercase tracking-wider">
+          <i className="fas fa-exclamation-triangle"></i>
+          <span>{errorToast}</span>
         </div>
-        <button onClick={onReset} className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-[10px] font-black uppercase text-white tracking-widest hover:bg-white/10">{t('endSession')}</button>
+      )}
+
+      {loading && !isLiveActive && (
+          <div className="absolute inset-0 z-[100] bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center animate-in fade-in">
+              <div className="flex gap-2 mb-6">
+                 {[0, 0.1, 0.2].map(d => <div key={d} className="w-3 h-12 bg-gradient-to-t from-secondary to-orange-400 rounded-full animate-wave" style={{ animationDelay: `${d}s` }}></div>)}
+              </div>
+              <p className="text-xs font-black uppercase tracking-[0.3em] text-primary dark:text-white">{t('processing')}</p>
+          </div>
+      )}
+      
+      {isCameraOpen && (
+          <div className="absolute inset-0 z-[110] bg-black flex flex-col">
+              <video ref={videoRef} autoPlay playsInline className="flex-1 object-cover"></video>
+              <div className="p-10 flex justify-center gap-12 bg-black/50 backdrop-blur-md pb-[calc(2rem+env(safe-area-inset-bottom))]">
+                  <button onClick={() => setIsCameraOpen(false)} className="w-16 h-16 rounded-full bg-white/20 text-white hover:bg-white/30 transition-all"><i className="fas fa-times text-xl"></i></button>
+                  <button onClick={takePhoto} className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center transition-all active:scale-95 shadow-[0_0_30px_rgba(255,255,255,0.3)]"><div className="w-16 h-16 rounded-full bg-white"></div></button>
+              </div>
+          </div>
+      )}
+
+      {/* Header */}
+      <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-md p-4 md:px-8 flex justify-between items-center z-10 shrink-0 border-b border-gray-100 dark:border-white/5">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-secondary to-orange-500 flex items-center justify-center text-white shadow-lg shadow-orange-500/20"><i className="fas fa-robot text-lg"></i></div>
+          <div>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Active Intelligence • {currentLangNative}</p>
+              <h4 className="font-black text-lg md:text-xl text-primary dark:text-white tracking-tight">{t(initialMode.toLowerCase().replace('_', '') + 'Assistant')}</h4>
+          </div>
+        </div>
+        <button onClick={onReset} className="px-5 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+            {t('endSession')}
+        </button>
       </div>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        {/* Split Screen - Live Visualizer Panel (Active only) */}
+        {/* Live Visualization Panel */}
         {isLiveActive && (
-          <div className="flex-1 md:flex-[0_0_40%] bg-slate-900 relative flex flex-col items-center justify-center p-6 border-b-2 md:border-b-0 md:border-r-2 border-gray-200 dark:border-slate-700 order-1 md:order-2 animate-in slide-in-from-top md:slide-in-from-right duration-500 z-20 shadow-2xl overflow-hidden">
-              {/* Enhanced Ambient Background for Live Mode */}
-              <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 z-0"></div>
-              <div className="absolute top-0 right-0 w-64 h-64 bg-secondary/5 rounded-full blur-3xl z-0 pointer-events-none"></div>
+          <div className="absolute inset-0 z-50 bg-slate-900 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-300">
+              <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-slate-800 via-slate-900 to-black z-0"></div>
+              
+              {/* Dynamic Visualizer */}
+              <div className="relative z-10 w-full max-w-md aspect-square flex items-center justify-center">
+                   {/* Multiple rings */}
+                   <div className="absolute w-64 h-64 border-2 border-secondary/20 rounded-full animate-[spin_10s_linear_infinite]"></div>
+                   <div className="absolute w-56 h-56 border-2 border-secondary/10 rounded-full animate-[spin_8s_linear_infinite_reverse]"></div>
+                   
+                   {/* Voice Reactive Blobs */}
+                   <div className="absolute inset-0 flex items-center justify-center">
+                       <div className="w-40 h-40 bg-secondary/30 rounded-full blur-3xl transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/30})` }}></div>
+                   </div>
+                   
+                   <div className="relative z-10 w-32 h-32 bg-gradient-to-tr from-secondary to-orange-500 rounded-full flex items-center justify-center shadow-[0_0_60px_rgba(245,158,11,0.4)] transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/100})` }}>
+                       <i className="fas fa-microphone text-4xl text-white"></i>
+                   </div>
+              </div>
 
-              <div className="relative z-10 flex flex-col items-center w-full">
-                  <div className="relative w-32 h-32 flex items-center justify-center mb-6">
-                      <div className="absolute inset-0 bg-secondary/20 rounded-full animate-ping opacity-75" style={{ animationDuration: '2s' }}></div>
-                      <div className="absolute inset-4 bg-secondary/40 rounded-full animate-pulse"></div>
-                      <div className="relative z-10 w-24 h-24 bg-secondary rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(245,158,11,0.5)] transition-transform duration-75" style={{ transform: `scale(${1 + voiceVolume/50})` }}>
-                          <i className="fas fa-microphone text-3xl text-primary"></i>
-                      </div>
-                  </div>
-                  <h3 className="text-white font-black text-xl mb-2 tracking-tight">Listening...</h3>
-                  <p className="text-white/40 text-xs font-bold uppercase tracking-widest mb-8">{currentLangNative}</p>
+              <div className="relative z-10 text-center mt-8">
+                  <h3 className="text-white font-black text-2xl mb-2 tracking-tight">Listening...</h3>
+                  <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-10">{currentLangNative}</p>
                   
-                  <div className="flex gap-4">
-                      <button onClick={stopLiveSession} className="px-8 py-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 rounded-xl font-black uppercase text-xs tracking-widest transition-all">
-                        Stop Session
-                      </button>
-                  </div>
+                  <button onClick={stopLiveSession} className="w-16 h-16 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center border border-red-500/50 mx-auto">
+                    <i className="fas fa-stop text-xl"></i>
+                  </button>
               </div>
           </div>
         )}
 
-        {/* Chat Transcript Area - Resizes when Live is active */}
-        <div className={`flex flex-col overflow-hidden relative transition-all duration-500 order-2 md:order-1 ${isLiveActive ? 'flex-1 bg-white dark:bg-slate-950' : 'flex-1'}`}>
-          {/* Main scrollable container with ref */}
-          <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-10 space-y-6 bg-[#fcfcfd] dark:bg-slate-900/50 scroll-smooth">
-            {messages.map(m => (
-              <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-2`}>
-                <div className={`max-w-[90%] md:max-w-[75%] p-4 md:p-6 shadow-sm ${m.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
-                  {m.image && <img src={m.image} className="rounded-2xl mb-4 w-full object-cover max-h-64 shadow-xl" alt="Shared" />}
-                  <p className="text-sm md:text-base font-bold leading-relaxed whitespace-pre-wrap">{m.content}</p>
-                  
-                  {/* Grounding Links Rendering */}
-                  {m.groundingLinks && m.groundingLinks.length > 0 && (
-                      <div className="mt-4 flex flex-wrap gap-2 pt-3 border-t border-black/5 dark:border-white/5">
-                        {m.groundingLinks.slice(0, 3).map((link, idx) => (
-                          <a key={idx} href={link.uri} target="_blank" rel="noopener noreferrer" 
-                             className="flex items-center gap-2 bg-white/50 dark:bg-black/20 p-2 rounded-lg text-[9px] hover:bg-secondary/10 transition-colors border border-black/5 dark:border-white/5">
-                             <i className={`fas ${link.uri.includes('google.com/maps') ? 'fa-map-marker-alt text-red-500' : 'fa-globe text-blue-500'}`}></i>
-                             <span className="truncate max-w-[120px] font-medium text-primary dark:text-white opacity-80">{link.title}</span>
-                          </a>
-                        ))}
-                      </div>
-                  )}
-                </div>
+        {/* Chat Area */}
+        <div className="flex-1 overflow-hidden relative flex flex-col bg-slate-50/50 dark:bg-slate-900/50">
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8 scroll-smooth pb-24">
+            {messages.map((m, idx) => (
+              <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} animate-in fade-in slide-in-from-bottom-4 group`}>
+                 
+                 <div className="flex items-end gap-3 max-w-[90%] md:max-w-[75%]">
+                    {m.role === 'assistant' && (
+                        <div className="w-8 h-8 rounded-full bg-white dark:bg-slate-800 border border-gray-100 dark:border-white/10 flex items-center justify-center shrink-0 shadow-sm text-secondary text-xs">
+                            <i className="fas fa-robot"></i>
+                        </div>
+                    )}
+                    
+                    <div className={`p-5 md:p-6 shadow-sm relative ${m.role === 'user' ? 'bubble-user' : 'bubble-assistant'}`}>
+                        {m.image && (
+                            <div className="mb-4 overflow-hidden rounded-xl border border-white/10 shadow-lg">
+                                <img src={m.image} className="w-full object-cover max-h-64" alt="Shared" />
+                            </div>
+                        )}
+                        <p className="text-sm md:text-base font-medium leading-relaxed whitespace-pre-wrap">{m.content}</p>
+                        
+                        {/* Links */}
+                        {m.groundingLinks && m.groundingLinks.length > 0 && (
+                            <div className="mt-4 flex flex-wrap gap-2 pt-3 border-t border-black/5 dark:border-white/5">
+                                {m.groundingLinks.slice(0, 3).map((link, idx) => (
+                                <a key={idx} href={link.uri} target="_blank" rel="noopener noreferrer" 
+                                    className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg text-[10px] hover:bg-secondary/10 transition-colors border border-black/5 dark:border-white/5 group/link">
+                                    <div className="w-5 h-5 rounded-full bg-white dark:bg-slate-700 flex items-center justify-center shadow-sm">
+                                        <i className={`fas ${link.uri.includes('google.com/maps') ? 'fa-map-marker-alt text-red-500' : 'fa-globe text-blue-500'}`}></i>
+                                    </div>
+                                    <span className="truncate max-w-[150px] font-bold text-slate-700 dark:text-slate-200 group-hover/link:text-secondary">{link.title}</span>
+                                </a>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                 </div>
+                 <span className="text-[10px] font-bold text-slate-300 mt-2 px-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                     {m.role === 'user' ? 'You' : 'CivicEase'}
+                 </span>
               </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
+          
+          {/* Floating Input Area */}
+          {!isLiveActive && (
+             <div className="absolute bottom-6 left-4 right-4 md:left-8 md:right-8 z-20">
+                 <div className="glass-card p-2 rounded-[1.5rem] flex items-center gap-2 shadow-xl shadow-slate-200/50 dark:shadow-black/50">
+                    <button onClick={startCamera} className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-500 dark:text-slate-300 transition-colors flex items-center justify-center">
+                        <i className="fas fa-camera"></i>
+                    </button>
+                    
+                    <button onClick={toggleLiveVoice} className="w-12 h-12 rounded-full bg-secondary/10 hover:bg-secondary/20 text-secondary transition-colors flex items-center justify-center relative overflow-hidden group">
+                        <div className="absolute inset-0 bg-secondary/20 rounded-full animate-ping opacity-0 group-hover:opacity-100"></div>
+                        <i className="fas fa-microphone relative z-10"></i>
+                    </button>
+                    
+                    <div className="h-8 w-px bg-slate-200 dark:bg-slate-700 mx-1"></div>
+                    
+                    <input 
+                        type="text" 
+                        value={input} 
+                        onChange={e => setInput(e.target.value)} 
+                        onKeyDown={e => e.key === 'Enter' && handleSend()} 
+                        className="flex-1 bg-transparent border-none outline-none text-sm md:text-base font-medium px-2 text-slate-800 dark:text-white placeholder:text-slate-400"
+                        placeholder={t('speakOrType')}
+                    />
+                    
+                    <button 
+                        onClick={() => handleSend()} 
+                        disabled={!input.trim()} 
+                        className="w-12 h-12 rounded-full bg-primary hover:bg-slate-800 text-white shadow-lg disabled:opacity-50 disabled:shadow-none transition-all flex items-center justify-center transform active:scale-90"
+                    >
+                        <i className="fas fa-arrow-up"></i>
+                    </button>
+                 </div>
+             </div>
+          )}
         </div>
 
+        {/* Sidebar for Forms */}
         {formState && (
-          <div className={`shrink-0 transition-all duration-500 bg-white dark:bg-slate-900 border-l-2 border-gray-200 dark:border-slate-700 flex flex-col order-3 ${formState.isCollapsed ? 'md:w-20 w-12' : 'md:w-[350px] w-full h-[30dvh] md:h-auto'}`}>
-            <div className="p-4 md:p-6 border-b border-gray-50 dark:border-white/5 flex items-center justify-between shrink-0">
-                <div className={`transition-opacity duration-300 ${formState.isCollapsed ? 'opacity-0 overflow-hidden w-0' : 'opacity-100'}`}><h5 className="text-[10px] font-black uppercase tracking-widest text-secondary mb-1">Live Progress</h5><h4 className="text-sm font-black dark:text-white truncate max-w-[200px]">{formState.title}</h4></div>
-                <button onClick={() => setFormState(prev => prev ? { ...prev, isCollapsed: !prev.isCollapsed } : prev)} className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-slate-800 flex items-center justify-center text-gray-400"><i className={`fas ${formState.isCollapsed ? 'fa-expand' : 'fa-compress'} text-xs`}></i></button>
-            </div>
-            {!formState.isCollapsed && <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"><div className="space-y-2"><div className="flex justify-between items-end"><span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Fields Filled</span><span className="text-xs font-black text-secondary">{completedCount}/{totalCount}</span></div><div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-secondary transition-all duration-500" style={{ width: `${progressPercent}%` }}></div></div></div>{formState.fields.map(f => (<div key={f.name} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/50 border border-gray-50 dark:border-white/5"><div className="flex justify-between items-center"><span className="text-[9px] font-bold text-gray-400 uppercase truncate max-w-[150px]">{f.name}</span>{f.value ? <i className="fas fa-check-circle text-green-500 text-[10px]"></i> : <i className="fas fa-circle-notch text-gray-200 text-[10px]"></i>}</div><span className={`text-[11px] font-bold truncate ${f.value ? 'text-primary dark:text-white' : 'text-gray-300 italic'}`}>{f.value || 'Waiting...'}</span></div>))}{progressPercent === 100 && <button onClick={onComplete} className="w-full bg-green-500 text-white py-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all">Submit Final Form</button>}</div>}
+          <div className={`shrink-0 transition-all duration-500 bg-white dark:bg-slate-900 border-l border-gray-100 dark:border-white/5 flex flex-col shadow-2xl z-30 ${formState.isCollapsed ? 'md:w-16 w-14' : 'md:w-80 w-full h-[35dvh] md:h-auto absolute bottom-0 left-0 right-0 md:relative'}`}>
+             {/* ... Sidebar content ... */}
+             <div className="p-4 border-b border-gray-100 dark:border-white/5 flex items-center justify-between shrink-0 bg-slate-50/50 dark:bg-slate-800/50">
+                <div className={`transition-opacity duration-300 ${formState.isCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'}`}>
+                    <h5 className="text-[9px] font-black uppercase tracking-widest text-secondary mb-1">Form Progress</h5>
+                    <h4 className="text-sm font-bold truncate max-w-[180px]">{formState.title}</h4>
+                </div>
+                <button onClick={() => setFormState(prev => prev ? { ...prev, isCollapsed: !prev.isCollapsed } : prev)} className="w-8 h-8 rounded-lg bg-white dark:bg-slate-700 flex items-center justify-center text-slate-400 shadow-sm hover:text-primary transition-colors">
+                    <i className={`fas ${formState.isCollapsed ? 'fa-chevron-left' : 'fa-chevron-down md:fa-chevron-right'} text-xs`}></i>
+                </button>
+             </div>
+             
+             {!formState.isCollapsed && (
+                 <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                     <div className="space-y-2">
+                         <div className="flex justify-between items-end">
+                             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Completion</span>
+                             <span className="text-sm font-black text-primary dark:text-white">{Math.round(progressPercent)}%</span>
+                         </div>
+                         <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                             <div className="h-full bg-gradient-to-r from-secondary to-orange-500 transition-all duration-700 ease-out" style={{ width: `${progressPercent}%` }}></div>
+                         </div>
+                     </div>
+                     
+                     <div className="space-y-3">
+                        {formState.fields.map((f, i) => (
+                            <div key={i} className={`p-3 rounded-xl border transition-all ${f.value ? 'bg-green-50/50 dark:bg-green-900/10 border-green-200 dark:border-green-800' : 'bg-white dark:bg-slate-800 border-gray-100 dark:border-white/5'}`}>
+                                <div className="flex justify-between items-start gap-2">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{f.name}</span>
+                                    {f.value ? <i className="fas fa-check-circle text-green-500 text-xs"></i> : <div className="w-2 h-2 rounded-full bg-slate-200 dark:bg-slate-700"></div>}
+                                </div>
+                                <div className={`mt-1 text-xs font-semibold truncate ${f.value ? 'text-slate-800 dark:text-slate-200' : 'text-slate-300 italic'}`}>
+                                    {f.value || 'Required'}
+                                </div>
+                            </div>
+                        ))}
+                     </div>
+                     
+                     {progressPercent === 100 && (
+                         <button onClick={onComplete} className="w-full py-4 bg-primary text-white rounded-xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all">
+                             Submit Application
+                         </button>
+                     )}
+                 </div>
+             )}
           </div>
         )}
       </div>
-
-      {/* Input Bar - Hidden during Live Mode to fix layout shifts and focus on voice */}
-      {!isLiveActive && (
-        <div className="p-4 md:p-8 bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-white/5 pb-[calc(1.5rem+env(safe-area-inset-bottom))]">
-          <div className="flex gap-2 md:gap-4 max-w-5xl mx-auto">
-            <button onClick={startCamera} className="w-12 h-12 md:w-16 md:h-16 bg-slate-50 dark:bg-slate-800 rounded-xl md:rounded-2xl flex items-center justify-center text-primary dark:text-secondary active:scale-95 transition-all"><i className="fas fa-camera text-base md:text-xl"></i></button>
-            <button onClick={toggleLiveVoice} className={`w-12 h-12 md:w-16 md:h-16 rounded-xl md:rounded-2xl flex items-center justify-center transition-all ${isLiveActive ? 'bg-secondary text-primary' : 'bg-slate-50 dark:bg-slate-800 text-gray-500'}`}><i className={`fas ${isLiveActive ? 'fa-stop-circle' : 'fa-microphone'} text-base md:text-xl`}></i></button>
-            <div className="flex-1 relative"><input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="w-full h-12 md:h-16 bg-slate-50 dark:bg-slate-950 rounded-xl md:rounded-2xl px-6 dark:text-white font-bold text-sm md:text-base outline-none border border-transparent focus:border-secondary transition-all" placeholder={t('speakOrType')}/></div>
-            <button onClick={() => handleSend()} className="w-12 h-12 md:w-16 md:h-16 bg-primary text-white flex items-center justify-center rounded-xl md:rounded-2xl shrink-0 shadow-lg active:scale-90 transition-all"><i className="fas fa-paper-plane"></i></button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
